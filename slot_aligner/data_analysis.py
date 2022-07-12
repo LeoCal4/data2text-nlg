@@ -1,13 +1,14 @@
-from collections import Counter, OrderedDict
+import argparse
 import json
 import os
-import pandas as pd
+from collections import Counter, OrderedDict
 
-from constants import SlotNameConversionMode
-from dataset_loaders.e2e import E2EDataset, E2ECleanedDataset
-from dataset_loaders.multiwoz import MultiWOZDataset
+import pandas as pd
+from data_loader import MRToTextDataset
+from dataset_loaders.e2e import E2ECleanedDataset
 from dataset_loaders.viggo import ViggoDataset
 from slot_aligner.slot_alignment import count_errors, find_alignment
+from typing import List
 
 
 def align_slots(data_dir, filename, dataset_class, serialize_pos_info=False):
@@ -24,8 +25,7 @@ def align_slots(data_dir, filename, dataset_class, serialize_pos_info=False):
     # Load MRs and corresponding utterances
     df_data = pd.read_csv(os.path.join(data_dir, filename), header=0)
     mrs_raw = df_data.iloc[:, 0].to_list()
-    mrs_processed = dataset_class.preprocess_mrs(
-        mrs_raw, as_lists=True, lowercase=False, slot_name_conversion=SlotNameConversionMode.SPECIAL_TOKENS)
+    mrs_processed = dataset_class.preprocess_mrs(mrs_raw, as_lists=True, lowercase=False, convert_slot_names=True)
     utterances = df_data.iloc[:, 1].to_list()
 
     for mr_as_list, utt in zip(mrs_processed, utterances):
@@ -42,7 +42,8 @@ def align_slots(data_dir, filename, dataset_class, serialize_pos_info=False):
     df_data.to_csv(out_file_path, index=False, encoding='utf-8-sig')
 
 
-def score_slot_realizations(data_dir, predictions_file, dataset_class, slot_level=False, verbose=False):
+def score_slot_realizations(data_dir, predictions_file, dataset_class, slot_level=False, verbose=False,
+                             output_dir_path: str = None, output_name: str = "test"):
     """Analyzes unrealized and hallucinated slot mentions in the utterances."""
 
     error_counts = []
@@ -53,8 +54,7 @@ def score_slot_realizations(data_dir, predictions_file, dataset_class, slot_leve
     # Load MRs and corresponding utterances
     df_data = pd.read_csv(os.path.join(data_dir, predictions_file), header=0)
     mrs_raw = df_data.iloc[:, 0].to_list()
-    mrs_processed = dataset_class.preprocess_mrs(
-        mrs_raw, as_lists=True, lowercase=False, slot_name_conversion=SlotNameConversionMode.SPECIAL_TOKENS)
+    mrs_processed = dataset_class.preprocess_mrs(mrs_raw, as_lists=True, lowercase=False, convert_slot_names=True)
     utterances = df_data.iloc[:, 1].fillna('').to_list()
 
     for mr_as_list, utt in zip(mrs_processed, utterances):
@@ -70,7 +70,9 @@ def score_slot_realizations(data_dir, predictions_file, dataset_class, slot_leve
     df_data['errors'] = error_counts
     df_data['incorrect'] = incorrect_slots
     df_data['duplicate'] = duplicate_slots
-    out_file_path = os.path.splitext(os.path.join(data_dir, predictions_file))[0] + ' [errors].csv'
+    if not output_dir_path:
+        output_dir_path = data_dir
+    out_file_path = os.path.join(output_dir_path, output_name) + '.csv'
     df_data.to_csv(out_file_path, index=False, encoding='utf-8-sig')
 
     # Calculate the slot-level or utterance-level SER
@@ -79,12 +81,48 @@ def score_slot_realizations(data_dir, predictions_file, dataset_class, slot_leve
     else:
         ser = sum([num_errs > 0 for num_errs in error_counts]) / len(utterances)
 
+    num_wrong_sentences = df_data[df_data['errors'] > 0]["incorrect"].size
+    num_tot_sentences = len(mrs_raw)
+    percentage_of_wrong_sentences = round(num_wrong_sentences * 100 / num_tot_sentences, 2)
+
     # Print the SER
     if verbose:
         print(f'>> Slot error rate: {round(100 * ser, 2)}%')
     else:
-        print(f'{round(100 * ser, 2)}%')
+        print(f"SER:  {round(100 * ser, 2)}% (wrong slots {sum(error_counts)}/{total_content_slots})\n",
+              f"SeER: {percentage_of_wrong_sentences}% (wrong sentences: {num_wrong_sentences}/{num_tot_sentences})")
 
+    return ser
+
+
+def get_dataset_class(dataset_name: str) -> MRToTextDataset:
+    if "viggo" in dataset_name: # to include viggo-small
+        dataset_class = ViggoDataset
+    elif dataset_name == "e2e":
+        dataset_class = E2ECleanedDataset
+    else:
+        raise ValueError(f"{dataset_name} is not a valid dataset name")
+    return dataset_class
+
+
+def calculate_ser(mrs_raw: List[str], utterances: List[str], dataset_name: str) -> float:
+    """Analyzes unrealized and hallucinated slot mentions in the utterances."""
+    #* Load MRs and corresponding utterances
+    dataset_class = get_dataset_class(dataset_name)
+    mrs_processed = dataset_class.preprocess_mrs(mrs_raw, as_lists=True, lowercase=False, convert_slot_names=True)
+
+    #* Count the missing and hallucinated slots in the utterances
+    error_counts = []
+    total_content_slots = 0
+    for mr_as_list, utt in zip(mrs_processed, utterances):
+        num_errors, _, _, num_content_slots = count_errors(
+            utt, mr_as_list, dataset_class.name
+        )
+        error_counts.append(num_errors)
+        total_content_slots += num_content_slots
+
+    #* Calculate SER
+    ser = sum(error_counts) / total_content_slots
     return ser
 
 
@@ -327,44 +365,96 @@ def analyze_contrast_relations(dataset, filename):
     new_df.to_csv(os.path.join(config.DATA_DIR, dataset, filename_out), index=False, encoding='utf8')
 
 
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base_dataset_path", type=str, default=None, help="Path to the dataset.")
+    parser.add_argument("--dataset_partition", type=str, default=None, help="Name of the dataset partition (usually train, test or validation).")
+    parser.add_argument("--dataset_name", type=str, help="Dataset name (either Viggo or E2E")
+    parser.add_argument("--generated_file_path", type=str, help="Path to the file containing the generated sentences")
+    parser.add_argument("--output_name", type=str, help="Output name")
+    parser.add_argument("--output_dir_path", type=str, help="Output dir path")
+    parser.add_argument("--datatuner_refs", action="store_true", help="Whether the refs are generated from the original Datatuner or not")
+    parser.add_argument("--txt_predictions", action="store_true", help="Whether the refs are generated from raw txt")
+    return parser.parse_args()
+
+
+def extract_original_datatuner_refs(datatuner_refs_path: str) -> List[str]:
+    refs = []
+    with open(datatuner_refs_path, "r") as f:
+        datatuner_json = json.load(f)
+        for entry in datatuner_json:
+            zipped_entry = list(zip(entry["pred"], entry["pred_prob"], entry["reranked"]))
+            sorted_entry = sorted(zipped_entry, key=lambda x: (x[0], -x[1])) # pred, -pred_prob
+            refs.append(sorted_entry[0][2])
+    return refs
+
+
+def extract_external_refs(external_refs_path: str) -> List[str]:
+    generated_file_lines = []
+    refs = []
+    with open(external_refs_path, "r") as f:
+        generated_file_lines = f.readlines()
+    for line in generated_file_lines:
+        if "GEN (default):" in line:
+            refs.append(line.split("GEN (default):")[1].strip())
+        elif "GEN:" in line:
+            refs.append(line.split("GEN:")[1].strip())
+    return refs
+
+
+def extract_external_refs_from_json(external_refs_path: str) -> List[str]:
+    predictions = []
+    with open(external_refs_path, "r") as f:
+        predictions = json.load(f) 
+    refs = [prediction["gen"][0] for prediction in predictions]
+    return refs
+
+
+def merge_external_refs_with_mr(original_dataset_dir_path: str, dataset_filename: str, external_refs_path: str, 
+                                txt_predictions: bool = False, datatuner_refs: bool = False) -> str:
+    """Gets refs from an external file and then pairs them to the generated sentences
+    in a pandas DataFrame object which is written to disk.
+    The DataFrame is the same as the base dataset, but with the "ref" column 
+    replaced with the generated sentences.
+
+    Args:
+        original_dataset_dir_path (str)
+        dataset_filename (str)
+        external_refs_path (str)
+        txt_predictions (bool, optional): If the predictions/refs are taken from an (old version) txt file with generated sentences. Defaults to True.
+        datatuner_refs (bool, optional): If the predictions/refs are taken from a DataTuner generated file. Defaults to False.
+
+    Returns:
+        str: path to the merged dataset
+    """
+    if not datatuner_refs:
+        if txt_predictions:
+            refs = extract_external_refs(external_refs_path)
+        else:
+            refs = extract_external_refs_from_json(external_refs_path)
+    else:
+        refs = extract_original_datatuner_refs(external_refs_path)
+    df_data = pd.read_csv(os.path.join(original_dataset_dir_path, dataset_filename), header=0)
+    df_data["ref"] = refs
+    merged_file_path = os.path.join(original_dataset_dir_path, f"merged_{dataset_filename}")
+    df_data.to_csv(merged_file_path, index=False, encoding='utf-8-sig')
+    return merged_file_path
+
+
+def main():
+    args = parse_arguments()
+    dataset_name = args.dataset_name.strip().lower()
+    dataset_class = get_dataset_class(dataset_name)
+    output_name = f"{dataset_name}_{args.output_name}"
+    dataset_partition = args.base_dataset_path.split(os.sep)[-1].strip() if args.dataset_partition is None else args.dataset_partition
+    output_name_without_file = f"{dataset_partition}_{output_name.split(os.sep)[0].strip()}"
+    merged_dataset_path = merge_external_refs_with_mr(args.base_dataset_path, dataset_partition, args.generated_file_path, datatuner_refs=args.datatuner_refs, txt_predictions=args.txt_predictions)
+    score_slot_realizations(args.base_dataset_path, merged_dataset_path, dataset_class, output_name=output_name_without_file, output_dir_path=args.output_dir_path, slot_level=True)
+
+
 if __name__ == '__main__':
-    align_slots(r'/d/Git/data2text-nlg/data/rest_e2e', 'devset.csv', E2EDataset, serialize_pos_info=False)
-
-    # ----
-
+    main()
     # score_slot_realizations(r'/d/Git/data2text-nlg/data/multiwoz',
     #                         'valid.csv', MultiWOZDataset, slot_level=True)
     # score_slot_realizations(r'/d/Git/data2text-nlg/data/video_game',
     #                         'valid.csv', ViggoDataset, slot_level=True)
-    # score_slot_realizations(r'/d/Git/data2text-nlg/predictions_baselines/DataTuner/video_game',
-    #                         'systemFc.csv', ViggoDataset, slot_level=True)
-
-    # score_slot_realizations(r'/d/Git/data2text-nlg/predictions/video_game/finetuned_verbalized_slots/bart-base_lr_1e-5_bs_32_wus_100_run3/beam_search_20',
-    #                         f'epoch_18_step_160_beam_search_reranked_att_1.0.csv', ViggoDataset, slot_level=True)
-    # score_slot_realizations(r'/d/Git/data2text-nlg/predictions/rest_e2e/finetuned_verbalized_slots/bart-base_lr_1e-5_bs_32_wus_500_run3/beam_search_20',
-    #                         f'epoch_17_step_2629_beam_search_reranked_att_1.0.csv', E2EDataset, slot_level=True)
-    # score_slot_realizations(r'/d/Git/data2text-nlg/predictions/multiwoz/finetuned_verbalized_slots/bart-base_lr_1e-5_bs_32_wus_500_run4',
-    #                         'epoch_18_step_1749_beam_search_reranked_att_2.0.csv', MultiWOZDataset, slot_level=True)
-
-    # for thr in range(2, 5):
-    #     score_slot_realizations(r'/d/Git/data2text-nlg/predictions/video_game/finetuned_verbalized_slots/bart-large_lr_4e-6_bs_16_wus_500_run1/att_guidance_eos_03',
-    #                             f'epoch_13_step_319_beam_search_reranked_1.0_thr_{thr:02d}.csv', ViggoDataset, slot_level=True)
-    # for thr in range(2, 5):
-    #     score_slot_realizations(r'/d/Git/data2text-nlg/predictions/rest_e2e/finetuned_verbalized_slots/t5-base_lr_3e-5_bs_32_wus_100_run1/att_guidance_eos_03',
-    #                             f'epoch_17_step_1315_beam_search_reranked_1.0_thr_{thr:02d}.csv', E2EDataset, slot_level=True)
-
-    # ----
-
-    # score_emphasis('predictions-rest_e2e_stylistic_selection/devset', 'predictions RNN (4+4) augm emph (reference).csv')
-
-    # ----
-
-    # predictions_dir = 'predictions rest_e2e (emphasis+contrast)'
-    # predictions_file = 'predictions TRANS emphasis+contrast, train single, test combo extra (23.2k iter).csv'
-    #
-    # score_emphasis(predictions_dir, predictions_file)
-    # score_contrast(predictions_dir, predictions_file)
-
-    # ----
-
-    # analyze_contrast_relations('rest_e2e', 'devset_e2e.csv')
