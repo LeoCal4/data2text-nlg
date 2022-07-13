@@ -34,7 +34,8 @@ def find_all_in_list(val, lst):
 
 
 def get_slot_value_alternatives(slot):
-    slot_alternatives_path = os.path.join('slot_aligner', 'alignment', 'alternatives.json')
+    current_dir_path = os.path.dirname(os.path.abspath(__file__))
+    slot_alternatives_path = os.path.join(current_dir_path, 'alternatives.json')
     with open(slot_alternatives_path, 'r') as f_alternatives:
         alternatives_dict = json.load(f_alternatives)
 
