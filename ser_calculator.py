@@ -17,7 +17,7 @@ def get_dataset_class(dataset_name: str) -> MRToTextDataset:
     return dataset_class
 
 
-def calculate_ser(mrs_raw: List[str], utterances: List[str], dataset_name: str) -> float:
+def calculate_ser(mrs_raw: List[str], utterances: List[str], dataset_name: str, output_uer: bool = False) -> float:
     """Analyzes unrealized and hallucinated slot mentions in the utterances."""
     #* Load MRs and corresponding utterances
     dataset_class = get_dataset_class(dataset_name)
@@ -35,4 +35,9 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], dataset_name: str) 
 
     #* Calculate SER
     ser = sum(error_counts) / total_content_slots
-    return ser
+    outputs = ser, sum(error_counts)
+    if output_uer:
+        wrong_sentences = sum([num_errs > 0 for num_errs in error_counts])
+        uer = wrong_sentences / len(utterances)
+        outputs += uer, wrong_sentences
+    return outputs
