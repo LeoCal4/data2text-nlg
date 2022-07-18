@@ -20,7 +20,14 @@ def get_dataset_class(dataset_name: str) -> MRToTextDataset:
 def calculate_ser(mrs_raw: List[str], utterances: List[str], dataset_name: str, output_uer: bool = False) -> float:
     """Analyzes unrealized and hallucinated slot mentions in the utterances."""
     #* Load MRs and corresponding utterances
-    dataset_class = get_dataset_class(dataset_name)
+    try:
+        dataset_class = get_dataset_class(dataset_name)
+    except ValueError:
+        print(f"ERROR: could not provide SER for dataset {dataset_name}")
+        outputs = -1.0, -1.0
+        if output_uer:
+            outputs += -1.0, -1.0
+        return outputs
     mrs_processed = dataset_class.preprocess_mrs(mrs_raw, as_lists=True, lowercase=False, slot_name_conversion=SlotNameConversionMode.SPECIAL_TOKENS)
 
     #* Count the missing and hallucinated slots in the utterances
