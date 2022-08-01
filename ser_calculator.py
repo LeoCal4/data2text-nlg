@@ -6,7 +6,7 @@ from slot_aligner.data_analysis import count_errors
 from data_loader import MRToTextDataset
 from dataset_loaders.e2e import E2ECleanedDataset
 from dataset_loaders.viggo import ViggoDataset
-import webnlg_ser_extractor
+import webnlg_ser_extractor, jilda_ser_extractor
 
 
 def get_dataset_class(dataset_name: str) -> MRToTextDataset:
@@ -22,7 +22,17 @@ def get_dataset_class(dataset_name: str) -> MRToTextDataset:
 def calculate_ser(mrs_raw: List[str], utterances: List[str], dataset_name: str, output_uer: bool = False, base_dataset_path: str = None) -> float:
     """Analyzes unrealized and hallucinated slot mentions in the utterances."""
     #* check if the dataset is webnlg
-    if "webnlg" in dataset_name:
+    # TODO clean repeated code
+    if "jilda" in dataset_name:
+        if base_dataset_path is None:
+            # should be /something/datatuner/src/datatuner/lm/custom/libs/data2text-nlp, so we remove everything after the first datatuner folder
+            datatuner_folder = os.path.sep.join(os.path.dirname(os.path.abspath(__file__)).split(os.path.sep)[:-6])
+            base_dataset_path = os.path.join(datatuner_folder, "data", dataset_name)
+        outputs = jilda_ser_extractor.calculate_ser(mrs_raw, utterances, base_dataset_path)
+        if not output_uer:
+            outputs = outputs[:2]
+        return outputs
+    elif "webnlg" in dataset_name:
         if base_dataset_path is None:
             # should be /something/datatuner/src/datatuner/lm/custom/libs/data2text-nlp, so we remove everything after the first datatuner folder
             datatuner_folder = os.path.sep.join(os.path.dirname(os.path.abspath(__file__)).split(os.path.sep)[:-6])

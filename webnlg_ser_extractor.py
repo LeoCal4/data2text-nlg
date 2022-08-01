@@ -259,7 +259,15 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
         total_n_slots += n_slots
         wrong_slots_per_entry.append(missing_entities + n_hallucinated_entities)
         if missing_entities > 0 or n_hallucinated_entities > 0:
-            wrong_entries.append({"mr": mr, "pred": pred, "missing": total_missing_data, "n_missing": missing_entities, "entities": total_wrong_entities, "n_hallucinated": n_hallucinated_entities, "hallucinated": hallucinated_entities})
+            wrong_entries.append({
+                "mr": mr, 
+                "pred": pred, 
+                "missing": total_missing_data, 
+                "n_missing": missing_entities, 
+                "entities": total_wrong_entities, 
+                "n_hallucinated": n_hallucinated_entities, 
+                "hallucinated": hallucinated_entities
+            })
     total_wrong_slots = sum(wrong_slots_per_entry)
     ser = (total_wrong_slots / total_n_slots) # slot error rate
     wrong_sentences = sum([num_errs > 0 for num_errs in wrong_slots_per_entry])
