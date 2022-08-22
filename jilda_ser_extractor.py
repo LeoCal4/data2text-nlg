@@ -153,7 +153,7 @@ def is_substring_loosely_present(main: Union[str, List[str]], sub: Union[str, Li
     return (sum([token in main for token in sub]) / len(sub)) >= 0.5
 
 
-def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: str):
+def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: str, save_errors: bool = False):
     global ERRORS
     ERRORS = []
     assert len(mrs_raw) == len(utterances)
@@ -253,10 +253,11 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
                 })
             wrong_slots_per_entry.append(n_missing + n_hallucinated + n_repeated)
             total_n_slots += len(slot_names)
-    # with open("jilda_ser_results.json", "w", encoding="utf-8") as f:
-    #     json.dump(wrong_entries, f, ensure_ascii=False, indent=4, sort_keys=False)
-    # with open("jilda_ser_errors.json", "w", encoding="utf-8") as f:
-    #     json.dump(ERRORS, f, ensure_ascii=False, indent=4, sort_keys=False)
+    if save_errors:
+        with open("jilda_ser_results.json", "w", encoding="utf-8") as f:
+            json.dump(wrong_entries, f, ensure_ascii=False, indent=4, sort_keys=False)
+        with open("jilda_ser_errors.json", "w", encoding="utf-8") as f:
+            json.dump(ERRORS, f, ensure_ascii=False, indent=4, sort_keys=False)
     n_wrong_slots = sum(wrong_slots_per_entry)
     ser = n_wrong_slots / total_n_slots
     n_wrong_sentences = sum([num_errs > 0 for num_errs in wrong_slots_per_entry])
@@ -267,8 +268,10 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
 
 if __name__ == "__main__":
     base_dataset_path = r"C:\Users\Leo\Documents\PythonProjects\Tesi\datatuner\data\jilda"
-    with open(os.path.join(base_dataset_path, "validation.json"), "r", encoding="utf-8") as f:
-        dataset = json.load(f)
+    dataset = []
+    for partition in ["train", "validation", "test"]:
+        with open(os.path.join(base_dataset_path, f"{partition}.json"), "r", encoding="utf-8") as f:
+            dataset.extend(json.load(f))
     mrs = [entry["mr"] for entry in dataset]
 
     #* T5 NEW
@@ -282,11 +285,7 @@ if __name__ == "__main__":
     print("BASE")
     utterances = [entry["ref"] for entry in dataset]
 
-    outputs = calculate_ser(mrs, utterances, base_dataset_path)
+    outputs = calculate_ser(mrs, utterances, base_dataset_path, save_errors=True)
     print(f"SER: {outputs[0]*100:.3f} ({outputs[1]} slots)")
     print(f"UER: {outputs[2]*100:.3f} ({outputs[3]} sentences)")
-
-
-
-
 

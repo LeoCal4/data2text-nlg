@@ -110,8 +110,11 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
                 "hallucinated_values": hallucinated_values})
     with open("ser_results.json", "w", encoding="utf-8") as f:
         json.dump(wrong_entries, f, ensure_ascii=False, indent=4, sort_keys=False)
-    av_ser_in_percentage = (sum(se_rates) / len(se_rates)) * 100
-    print(round(av_ser_in_percentage, 2), '%')
+    ser = sum(se_rates) / len(se_rates)
+    uer = sum([curr_ser > 0 for curr_ser in se_rates]) / len(se_rates)
+    return ser, -1, uer, -1
+    # av_ser_in_percentage = (sum(se_rates) / len(se_rates)) * 100
+    # print(round(av_ser_in_percentage, 2), '%')
 
 
 if __name__ == "__main__":

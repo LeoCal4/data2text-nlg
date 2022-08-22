@@ -194,7 +194,8 @@ def remove_word_boundaries(sentence: str) -> str:
 
 
 def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: str, 
-                            loose_tokenized_search: bool = False, datatuner_format: bool = False):
+                            loose_tokenized_search: bool = False, datatuner_format: bool = False,
+                            save_errors: bool = False):
     #* get all cleaned subjects and objects from the whole corpus
     all_subj_cleaned, all_obj_cleaned = get_all_subj_obj(base_dataset_path)
     all_entities = list(set(all_subj_cleaned + all_obj_cleaned))
@@ -217,8 +218,10 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
         n_slots = len(subjs_and_objs)
         missing_entities = 0
         n_hallucinated_entities = 0
+        n_repeated_entities = 0
         total_missing_data = []
         total_wrong_entities = []
+        total_repeated_entities = []
         #* cycle subjects and objects
         for entity in subjs_and_objs:
             current_missing_data = []
@@ -244,6 +247,11 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
                 expanded_entities_absence.append(missing_data is not None)
             expanded_entities_missing = int(all(expanded_entities_absence))
             missing_entities += expanded_entities_missing
+            #* check REPETITIONS
+            reps_count = pred.count(entity)
+            if reps_count > 2:
+                total_repeated_entities.extend(entity)
+                n_repeated_entities += reps_count - 1
             if expanded_entities_missing:
                 total_missing_data.extend(current_missing_data)
                 total_wrong_entities.extend(current_wrong_entities)
@@ -257,7 +265,7 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
                 hallucinated_entities.append(entity)
                 n_hallucinated_entities += 1
         total_n_slots += n_slots
-        wrong_slots_per_entry.append(missing_entities + n_hallucinated_entities)
+        wrong_slots_per_entry.append(missing_entities + n_hallucinated_entities + n_repeated_entities)
         if missing_entities > 0 or n_hallucinated_entities > 0:
             wrong_entries.append({
                 "mr": mr, 
@@ -266,14 +274,17 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
                 "n_missing": missing_entities, 
                 "entities": total_wrong_entities, 
                 "n_hallucinated": n_hallucinated_entities, 
-                "hallucinated": hallucinated_entities
+                "hallucinated": hallucinated_entities,
+                "n_repeated": n_repeated_entities,
+                "repetitions": total_repeated_entities
             })
     total_wrong_slots = sum(wrong_slots_per_entry)
     ser = (total_wrong_slots / total_n_slots) # slot error rate
     wrong_sentences = sum([num_errs > 0 for num_errs in wrong_slots_per_entry])
     uer = (wrong_sentences / len(wrong_slots_per_entry)) # utterance error rate
-    with open("ser_results.json", "w", encoding="utf-8") as f:
-        json.dump(wrong_entries, f, ensure_ascii=False, indent=4, sort_keys=False)
+    if save_errors:
+        with open("ser_results.json", "w", encoding="utf-8") as f:
+            json.dump(wrong_entries, f, ensure_ascii=False, indent=4, sort_keys=False)
     return ser, total_wrong_slots, uer, wrong_sentences
 
 
@@ -294,8 +305,10 @@ def extract_original_datatuner_refs(datatuner_refs_path: str) -> List[str]:
 
 if __name__ == "__main__":
     base_dataset_path = r"C:\Users\Leo\Documents\PythonProjects\Tesi\datatuner\data\webnlg"
-    with open(os.path.join(base_dataset_path, "test.json"), "r", encoding="utf-8") as f:
-        dataset = json.load(f)
+    dataset =  []
+    for partition in ["train", "validation", "test"]:
+        with open(os.path.join(base_dataset_path, f"{partition}.json"), "r", encoding="utf-8") as f:
+            dataset.extend(json.load(f))
     mrs = [entry["modifiedtripleset"] for entry in dataset]
     
     #* DATATUNER
@@ -321,6 +334,6 @@ if __name__ == "__main__":
     print("BASE")
     utterances = [entry["text"][-1] for entry in dataset]
     
-    outputs = calculate_webnlg_ser(mrs, utterances, base_dataset_path, loose_tokenized_search=True, datatuner_format=True)
+    outputs = calculate_webnlg_ser(mrs, utterances, base_dataset_path, loose_tokenized_search=True, datatuner_format=True, save_errors=True)
     print(f"SER: {outputs[0]*100:.3f} ({outputs[1]} slots)")
     print(f"UER: {outputs[2]*100:.3f} ({outputs[3]} sentences)")
