@@ -108,7 +108,7 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
                 "missing": missing_values,
                 "n_hallucinated": hallucinated, 
                 "hallucinated_values": hallucinated_values})
-    with open("ser_results.json", "w", encoding="utf-8") as f:
+    with open("webnlg_og_ser_results.json", "w", encoding="utf-8") as f:
         json.dump(wrong_entries, f, ensure_ascii=False, indent=4, sort_keys=False)
     ser = sum(se_rates) / len(se_rates)
     uer = sum([curr_ser > 0 for curr_ser in se_rates]) / len(se_rates)
@@ -119,7 +119,7 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
 
 if __name__ == "__main__":
     base_dataset_path = r"C:\Users\Leo\Documents\PythonProjects\Tesi\datatuner\data\webnlg"
-    with open(os.path.join(base_dataset_path, "test.json"), "r", encoding="utf-8") as f:
+    with open(os.path.join(base_dataset_path, "train.json"), "r", encoding="utf-8") as f:
         dataset = json.load(f)
     mrs = [entry["raw_modifiedtripleset"] for entry in dataset]
     
@@ -145,8 +145,14 @@ if __name__ == "__main__":
     #* BASE
     print("BASE")
     utterances = [entry["text"][-1] for entry in dataset]
+    #* T5 BASE CE SER ES
+    # print("T5 (BASE CE SER ES)")
+    # utt_path = r"C:\Users\Leo\Desktop\webnlg_base_ce_ser_es_predictions.json"
+    # with open(utt_path, "r", encoding="utf-8") as f:
+    #     raw_utts = json.load(f)
+    # utterances = [utt["gen"][0] for utt in raw_utts]
     
-    calculate_ser(mrs, utterances, base_dataset_path)
+    outputs = calculate_ser(mrs, utterances, base_dataset_path)
     # outputs = calculate_webnlg_ser(mrs, utterances, base_dataset_path, loose_tokenized_search=True, datatuner_format=True)
-    # print(f"SER: {outputs[0]*100:.3f} ({outputs[1]} slots)")
-    # print(f"UER: {outputs[2]*100:.3f} ({outputs[3]} sentences)")
+    print(f"SER: {outputs[0]*100:.3f}")
+    print(f"UER: {outputs[2]*100:.3f}")

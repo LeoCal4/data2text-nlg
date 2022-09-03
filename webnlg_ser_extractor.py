@@ -1,8 +1,8 @@
-from typing import List, Union, Tuple
-import re
-import os
+import datetime
 import json
-
+import os
+import re
+from typing import List, Tuple, Union
 
 CHARACTER_NORMALIZATION_MAP = {'À': 'A', 'Á': 'A', 'Â': 'A', 'Ã': 'A', 'Ä': 'A',
              'à': 'a', 'á': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a', 'ª': 'A', 'ă': 'a',
@@ -194,7 +194,7 @@ def remove_word_boundaries(sentence: str) -> str:
 
 
 def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: str, 
-                            loose_tokenized_search: bool = False, datatuner_format: bool = False,
+                            loose_tokenized_search: bool = True, datatuner_format: bool = False,
                             save_errors: bool = False):
     #* get all cleaned subjects and objects from the whole corpus
     all_subj_cleaned, all_obj_cleaned = get_all_subj_obj(base_dataset_path)
@@ -212,11 +212,12 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
     for mr, pred in zip(mrs_raw, utterances):
         pred = pred.lower()
         pred = normalize_entity_chars(pred)
+        pred = re.sub(r"(\d),(\d)", r"\1\2", pred) #* normalize number like 2000 written as 2,000
         mr = mr.lower()
         mr = normalize_entity_chars(mr)
         subjs_and_objs = extract_subjects_and_objects_from_mr(mr, datatuner_format=datatuner_format)
         n_slots = len(subjs_and_objs)
-        missing_entities = 0
+        n_missing_entities = 0
         n_hallucinated_entities = 0
         n_repeated_entities = 0
         total_missing_data = []
@@ -246,11 +247,12 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
                             break
                 expanded_entities_absence.append(missing_data is not None)
             expanded_entities_missing = int(all(expanded_entities_absence))
-            missing_entities += expanded_entities_missing
+            n_missing_entities += expanded_entities_missing
             #* check REPETITIONS
             reps_count = pred.count(entity)
-            if reps_count > 2:
-                total_repeated_entities.extend(entity)
+            og_reps_count = mr.count(entity)
+            if reps_count > og_reps_count and reps_count > 2:
+                total_repeated_entities.append(entity)
                 n_repeated_entities += reps_count - 1
             if expanded_entities_missing:
                 total_missing_data.extend(current_missing_data)
@@ -265,13 +267,13 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
                 hallucinated_entities.append(entity)
                 n_hallucinated_entities += 1
         total_n_slots += n_slots
-        wrong_slots_per_entry.append(missing_entities + n_hallucinated_entities + n_repeated_entities)
-        if missing_entities > 0 or n_hallucinated_entities > 0:
+        wrong_slots_per_entry.append(n_missing_entities + n_hallucinated_entities + n_repeated_entities)
+        if n_missing_entities > 0 or n_hallucinated_entities > 0 or n_repeated_entities > 0:
             wrong_entries.append({
                 "mr": mr, 
                 "pred": pred, 
                 "missing": total_missing_data, 
-                "n_missing": missing_entities, 
+                "n_missing": n_missing_entities, 
                 "entities": total_wrong_entities, 
                 "n_hallucinated": n_hallucinated_entities, 
                 "hallucinated": hallucinated_entities,
@@ -283,7 +285,9 @@ def calculate_webnlg_ser(mrs_raw: List[str], utterances: List[str], base_dataset
     wrong_sentences = sum([num_errs > 0 for num_errs in wrong_slots_per_entry])
     uer = (wrong_sentences / len(wrong_slots_per_entry)) # utterance error rate
     if save_errors:
-        with open("ser_results.json", "w", encoding="utf-8") as f:
+        now = datetime.datetime.now()
+        timestamp = datetime.datetime.timestamp(now)
+        with open(f"webnlg_ser_results_{timestamp}.json", "w", encoding="utf-8") as f:
             json.dump(wrong_entries, f, ensure_ascii=False, indent=4, sort_keys=False)
     return ser, total_wrong_slots, uer, wrong_sentences
 
@@ -306,15 +310,17 @@ def extract_original_datatuner_refs(datatuner_refs_path: str) -> List[str]:
 if __name__ == "__main__":
     base_dataset_path = r"C:\Users\Leo\Documents\PythonProjects\Tesi\datatuner\data\webnlg"
     dataset =  []
-    for partition in ["train", "validation", "test"]:
+    partitions = ["test"]
+    # partitions = ["train", "validation", "test"]
+    for partition in partitions:
         with open(os.path.join(base_dataset_path, f"{partition}.json"), "r", encoding="utf-8") as f:
             dataset.extend(json.load(f))
     mrs = [entry["modifiedtripleset"] for entry in dataset]
     
     #* DATATUNER
-    # print("DT")
-    # utt_path = r"C:\Users\Leo\Desktop\Tesi\results\webnlg\webnlg_base_results\reranked.json"
-    # utterances = extract_original_datatuner_refs(utt_path)
+    print("DT")
+    utt_path = r"C:\Users\Leo\Desktop\Tesi\results\webnlg\webnlg_base_results\reranked.json"
+    utterances = extract_original_datatuner_refs(utt_path)
     
     #* T5 (VERY OLD)
     # print("T5 (OLD)")
@@ -329,11 +335,21 @@ if __name__ == "__main__":
     # with open(utt_path, "r", encoding="utf-8") as f:
     #     raw_utts = json.load(f)
     # utterances = [utt["gen"][0] for utt in raw_utts]
+
+    #* T5 BEST (DCS 20)
+    # print("T5 (DCS 20)")
+    # utt_path = r"C:\Users\Leo\Desktop\Tesi\results\webnlg\webnlg_dcs20_predictions.json"
+    # print("T5 (BASE CE SER ES)")
+    # utt_path = r"C:\Users\Leo\Desktop\webnlg_base_ce_ser_es_predictions.json"
+    # with open(utt_path, "r", encoding="utf-8") as f:
+    #     raw_utts = json.load(f)
+    # utterances = [utt["gen"][0] for utt in raw_utts]
     
-    #* BASE
-    print("BASE")
-    utterances = [entry["text"][-1] for entry in dataset]
+    # #* BASE
+    # print("BASE")
+    # utterances = [entry["text"][-1] for entry in dataset]
     
+    assert len(mrs) == len(utterances)
     outputs = calculate_webnlg_ser(mrs, utterances, base_dataset_path, loose_tokenized_search=True, datatuner_format=True, save_errors=True)
     print(f"SER: {outputs[0]*100:.3f} ({outputs[1]} slots)")
     print(f"UER: {outputs[2]*100:.3f} ({outputs[3]} sentences)")

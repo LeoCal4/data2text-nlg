@@ -3,7 +3,7 @@
 #   nome_azienda -> ha sempre un valore
 
 
-from typing import List, Union, Tuple
+from typing import List, Union
 import re
 import os
 import json
@@ -34,12 +34,13 @@ SYNONYMS = {
     "<abilità>": ["competenz", "abilit", "skill", "conosc", "aggettiv", "esperienz", "caratter", "capacita", "capacità", "doti"],
     "<titolo_di_studio>": ["studi", "studente", "formazion", "certificazion", "laurea", "diploma", "competenz", "facolta", "percorso formativo", "percorso accademico"],
     "<grandezza_azienda>": ["grandezza", "dimension", "grand", "piccol", "media", "medio", "tipo di azienda"],
-    "<luogo>": ["luog", "città", "citta", "region", "stato", "provincia", "trasferir", "trasferimento", "spostar", "rimanere", "dove", "zon", "ubicazion", "italia", "estero"],
+    "<luogo>": ["luog", "città", "citta", "region", "stato", "provincia", "trasferi", "geografic", "spostar", "rimanere", "dove", "zon", "ubicazion", "italia", "estero"],
     "<contratto>": ["contratt", "posizione"],
     "<esperienze_lavorative>": ["esperienz", "lavorat", "passato"],
     "<lingue>": ["competenz", "abilit", "skill", "conoscenz", "lingu", "italiano"],
-    "<contatto>": ["contatt"],
-    "<età>": ["anagrafic", "anni", "eta", "età"]
+    "<contatto>": ["contatt", "riferimento"],
+    "<età>": ["anagrafic", "anni", "eta", "età"],
+    "<descrizione_lavoro>": ["impiego", "offerta", "lavoro", "opportunit"] # in case of ?
 }
 NEGATIONS = ["no", "non", "purtroppo", "nessuna", "nessuno", "nessun", "nemmeno"]
 PLACEHOLDER_VALUES = ["?", "nessuno", "none"]
@@ -66,7 +67,7 @@ def extract_slot_values_from_dialogue_act(dialogue_act: str) -> List[str]:
 
 
 def get_all_slot_values(base_dataset_path: str):
-    #* read all the webnlg corpus
+    #* read the dataset
     complete_dataset = []
     for partition in ["train", "validation", "test"]:
         partition_path = os.path.join(base_dataset_path, f"{partition}.json")
@@ -82,6 +83,7 @@ def get_all_slot_values(base_dataset_path: str):
                 continue
             slot_values.extend(extract_slot_values_from_dialogue_act(da))
     slot_values = list(set(slot_values))
+    #* these values are too ambigous and show up in way too many entries to be reliable hallucinations
     HALLUCINATION_AMBIGUOUS_WORDS = [
         "annuncio",
         "non è specificato", # contratto, luogo
@@ -92,36 +94,49 @@ def get_all_slot_values(base_dataset_path: str):
         "provincia", # luogo
         "controllo", # doveri
         "una persona", # altro
-        "progetto", # 
+        "progetto", 
+        "durata", # 
     ]
     [slot_values.remove(ambiguous_word) for ambiguous_word in HALLUCINATION_AMBIGUOUS_WORDS if ambiguous_word in slot_values]
     return slot_values
 
 
-def count_missing_values(slot_types: List[str], slot_values: List[str], cleaned_prediction: str) -> int:
+def count_missing_values(slot_types: List[str], slot_values: List[str], cleaned_prediction: str, cleaned_mr: str) -> int:
     global ERRORS
     n_missing = 0
+    #* VALUES:
+    #* - ANY non special VALUE: check verbatim
+    #* - ?: do nothing (explanation below)
+    #* - nessuno: check negation
+    #! all slot with ? value are part of <richiesta> da, while ~95% of richiesta DAs has a ? in a slot value
+    #!  for this reason, we don't need to check for questions hints when the value is ?, we just ignore it 
     for slot_type, slot_value in zip(slot_types, slot_values):
-        #* nothing we can do about these cases, so we just count them as wrong
-        if slot_type == "<nessuno>" or \
-            (slot_value in PLACEHOLDER_VALUES and slot_type in ["<descrizione_lavoro>", "<altro>"]):
+        #* nothing we can do about this case, so we just count it as wrong
+        if slot_type == "<altro>" and slot_value in PLACEHOLDER_VALUES:
             n_missing += 1
-            ERRORS.append({"error_type": "CURSED", "slot_type": slot_type, "slot_value": slot_value, "prediction": cleaned_prediction})
+            ERRORS.append({"error_type": "CURSED", "slot_type": slot_type, "slot_value": slot_value, "mr": cleaned_mr, "prediction": cleaned_prediction})
+            continue
+        #* mostly just the same as a negation da
+        if slot_type == "<nessuno>" or slot_value == "nessuno":
+            #* negations are checked on token level to be sure that it is not just a part of another word
+            is_negation_present = any([negation in cleaned_prediction.split() for negation in NEGATIONS])
+            if not is_negation_present:
+                n_missing += 1
+                ERRORS.append({"error_type": "NESSUNO - SLOT TYPE", "mr": cleaned_mr, "prediction": cleaned_prediction})
         #* if slot_value is a placeholder value, check for the presence of the slot type or its synonyms
-        #! in case <descrizione_lavoro> is "nessuno", there is no real way to check it (thus is always wrong)
-        elif slot_value in PLACEHOLDER_VALUES:
+        if slot_type != "<nessuno>" and slot_value in PLACEHOLDER_VALUES:
             slot_type_synonyms = SYNONYMS[slot_type]
             is_slot_type_present = any([slot_type_syn in cleaned_prediction for slot_type_syn in slot_type_synonyms])
             if not is_slot_type_present:
                 n_missing += 1
-                ERRORS.append({"error_type": "SLOT_TYPE", "slot_type_synonyms": slot_type_synonyms, "prediction": cleaned_prediction})
+                ERRORS.append({"error_type": "SLOT_TYPE", "slot_type_synonyms": slot_type_synonyms, "mr": cleaned_mr, "prediction": cleaned_prediction})
         #* if slot_value is an actual value, check for the presence of that value
         else:
             cleaned_slot_value = clean_entity(slot_value)
             delixicalized_slot_value = delexicalize_slot_value(cleaned_slot_value)
             if cleaned_slot_value not in cleaned_prediction and delixicalized_slot_value not in cleaned_prediction:
                 n_missing += 1
-                ERRORS.append({"error_type": "REAL VALUES", "slot_value": slot_value, "prediction": cleaned_prediction})
+                ERRORS.append({"error_type": "REAL VALUES", "slot_value": slot_value, "mr": cleaned_mr, "prediction": cleaned_prediction})
     return n_missing
 
 
@@ -144,13 +159,24 @@ def is_substring_strictly_present(main: Union[str, List[str]], sub: Union[str, L
             return False
     return True
 
-def is_substring_loosely_present(main: Union[str, List[str]], sub: Union[str, List[str]]) -> bool:
+#! trying with main as string
+def is_substring_loosely_present(main: str, sub: Union[str, List[str]]) -> bool:
+# def is_substring_loosely_present(main: Union[str, List[str]], sub: Union[str, List[str]]) -> bool:
     #* check if at least half of sub's tokens are present in main
-    if type(main) is not list:
-        main = main.split()
+    # if type(main) is not list:
+    #     main = main.split()
     if type(sub) is not list:
         sub = sub.split()
-    return (sum([token in main for token in sub]) / len(sub)) >= 0.5
+    # print(f"{[token[:-1] for token in sub if len(token) > 3]}")
+    # result = (sum([token in main for token in sub]) / len(sub)) >= 0.5
+    # result = (sum([token[:-1] in main if len(token) > 3 else token in main for token in sub]) / len(sub)) >= 0.5
+    # if not result:
+    #     print(f"{main=}") 
+    #     print(f"{sub=}") 
+    #     print("===========================")
+    # return result
+    return (sum([token[:-1] in main if len(token) > 3 else token in main for token in sub]) / len(sub)) >= 0.5
+    # return (sum([token in main for token in sub]) / len(sub)) >= 0.5
 
 
 def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: str, save_errors: bool = False):
@@ -186,10 +212,12 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
             slot_values = extract_slot_values_from_dialogue_act(dialogue_act)
             #* check REPETITIONS
             for slot_value in slot_values:
-                if slot_value in PLACEHOLDER_VALUES:
+                if slot_value in PLACEHOLDER_VALUES or len(slot_value) <= 1:
                     continue
-                reps_count = cleaned_prediction.count(clean_entity(slot_value))
-                if reps_count > 2:
+                cleaned_slot_value = clean_entity(slot_value)
+                reps_count = cleaned_prediction.count(cleaned_slot_value)
+                og_reps_count = cleaned_mr.count(cleaned_slot_value)
+                if reps_count > og_reps_count and reps_count > 2:
                     repeated_entries.append(slot_value)
                     n_repeated += reps_count - 1
             #* decide what to do based on da type
@@ -198,22 +226,22 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
                 is_request_present = any([request in cleaned_prediction for request in REQUESTS])
                 if not is_request_present:
                     n_missing += 1
-                    ERRORS.append({"error_type": "RICHIESTA", "prediction": cleaned_prediction})
+                    ERRORS.append({"mr": dialogue_act, "error_type": "RICHIESTA", "prediction": cleaned_prediction})
                 #* check for missing values
-                n_missing += count_missing_values(slot_types, slot_values, cleaned_prediction)
+                n_missing += count_missing_values(slot_types, slot_values, cleaned_prediction, cleaned_mr)
             #* check if there is a negation in the sentence + verbatim check of slot values
             elif dialogue_act_type == "<rifiuta>":
                 #* negations are checked on token level to be sure that it is not just a part of another word
                 is_negation_present = any([negation in cleaned_prediction.split() for negation in NEGATIONS])
                 if not is_negation_present:
                     n_missing += 1
-                    ERRORS.append({"error_type": "NEG", "prediction": cleaned_prediction})
+                    ERRORS.append({"mr": dialogue_act, "error_type": "RIFIUTA", "prediction": cleaned_prediction})
                 #* check for missing values
-                n_missing += count_missing_values(slot_types, slot_values, cleaned_prediction)
+                n_missing += count_missing_values(slot_types, slot_values, cleaned_prediction, cleaned_mr)
             #* only check for missing values
             #! <seleziona> is vary vague so we just check for values
             elif dialogue_act_type == "<informa>" or dialogue_act_type == "<seleziona>":
-                n_missing += count_missing_values(slot_types, slot_values, cleaned_prediction)
+                n_missing += count_missing_values(slot_types, slot_values, cleaned_prediction, cleaned_mr)
             else:
                 print(f"ERROR: dialogue_act_type {dialogue_act_type} not recognized")
                 continue
@@ -232,11 +260,14 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
                 #* check for both the cleaned and the delexicalized entities:
                 #*  - their tokenized versions are present in the tokenized prediction (strictly and in order) 
                 #*  - they are not present in the cleaned meaning prepresentation
-                #*  - their versions without the last letter are not present in the slot names synonyms
+                #*  - their versions without the last letter are not present in the slot names synonyms (issue with )
                 if (is_substring_strictly_present(tokenized_prediction, cleaned_entity) or is_substring_strictly_present(tokenized_prediction, delex_entity)) and \
                     (not is_substring_loosely_present(cleaned_mr, cleaned_entity) and not is_substring_loosely_present(cleaned_mr, delex_entity)) and \
                     (cleaned_entity[:-1] not in current_slot_names_synonyms and delex_entity[:-1] not in current_slot_names_synonyms):
-                    # (not is_substring_loosely_present(current_slot_names_synonyms, cleaned_entity[:-1]) and is_substring_loosely_present(current_slot_names_synonyms, delex_entity[:-1])):
+                    #* avoid repeating partial entities e.g. "guida" when "guida turistica" has already been added
+                    all_hallucinated_entities = " ".join(hallucinated_entities)
+                    if entity in all_hallucinated_entities:
+                        continue
                     hallucinated_entities.append(entity)
                     n_hallucinated += 1
             if n_missing > 0 or n_hallucinated > 0 or n_repeated > 0:
@@ -269,7 +300,9 @@ def calculate_ser(mrs_raw: List[str], utterances: List[str], base_dataset_path: 
 if __name__ == "__main__":
     base_dataset_path = r"C:\Users\Leo\Documents\PythonProjects\Tesi\datatuner\data\jilda"
     dataset = []
-    for partition in ["train", "validation", "test"]:
+    # partitions = ["test"]
+    partitions = ["train", "validation", "test"]
+    for partition in partitions:
         with open(os.path.join(base_dataset_path, f"{partition}.json"), "r", encoding="utf-8") as f:
             dataset.extend(json.load(f))
     mrs = [entry["mr"] for entry in dataset]
